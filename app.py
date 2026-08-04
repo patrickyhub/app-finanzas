@@ -250,13 +250,13 @@ if not df_config.empty and not df_transacciones.empty:
         else:
             total_comisiones = float(df_gastos_cuenta['Comision'].sum()) if 'Comision' in df_gastos_cuenta.columns else 0.0
             
-            # Forzar conversión limpia a float para evitar errores de tipo con strings vacíos o textos
-            limite_num = float(limite) if pd.notna(limite) and str(limite).strip() != '' else 0.0
-            gastos_num = float(total_gastos_sin_filtro) if pd.notna(total_gastos_sin_filtro) and str(total_gastos_sin_filtro).strip() != '' else 0.0
-            comisiones_num = float(total_comisiones) if pd.notna(total_comisiones) and str(total_comisiones).strip() != '' else 0.0
+            # Limpiar y forzar a números flotantes para evitar errores de tipo con strings o vacíos
+            limite_num = float(str(limite).replace("S/", "").strip()) if pd.notna(limite) and str(limite).strip() != '' else 0.0
+            gastos_num = float(str(total_gastos_sin_filtro).replace("S/", "").strip()) if pd.notna(total_gastos_sin_filtro) and str(total_gastos_sin_filtro).strip() != '' else 0.0
+            comisiones_num = float(str(total_comisiones).replace("S/", "").strip()) if pd.notna(total_comisiones) and str(total_comisiones).strip() != '' else 0.0
             
             saldo_disponible = limite_num - gastos_num - comisiones_num
-            # --- FIN SALDO DISPONIBLE ---# (El resto del código sigue igual: Análisis, Formulario y Tabla)
+            
 # --- 3. ASESOR FINANCIERO ---
 st.divider()
 st.subheader("📊 Análisis y recomendaciones")
