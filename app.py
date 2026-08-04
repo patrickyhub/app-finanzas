@@ -5,6 +5,7 @@ from oauth2client.service_account import ServiceAccountCredentials
 from datetime import datetime
 import plotly.graph_objects as go
 import plotly.express as px
+import json  # <--- Añade esta línea si no está
 
 # --- CONFIGURACIÓN ---
 st.set_page_config(page_title="Mis Finanzas", layout="wide")
@@ -14,12 +15,22 @@ st.title("🏦 Asesor Financiero (Sprint 4)")
 @st.cache_resource
 def conectar_google_sheets():
     scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-    creds = ServiceAccountCredentials.from_json_keyfile_name("credenciales.json", scope)
+    
+    try:
+        # MODO NUBE (Streamlit Cloud)
+        # Intenta leer las credenciales desde los "Secretos" de Streamlit
+        creds_info = json.loads(st.secrets["GOOGLE_CREDENTIALS_JSON"])
+        creds = ServiceAccountCredentials.from_service_account_info(creds_info, scope)
+    except Exception:
+        # MODO LOCAL (Tu computadora)
+        # Si falla (porque no estás en la nube), busca el archivo local (solo para desarrollo)
+        creds = ServiceAccountCredentials.from_json_keyfile_name("credenciales.json", scope)
+        
     return gspread.authorize(creds)
 
 def leer_hoja(nombre_hoja):
     cliente = conectar_google_sheets()
-    NOMBRE_ARCHIVO = "MisFinanzas"  # <-- ¡CAMBIA por el nombre de tu archivo!
+    NOMBRE_ARCHIVO = "app_mis_finanzas"  # <-- ¡CAMBIA por el nombre de tu archivo!
     try:
         libro = cliente.open(NOMBRE_ARCHIVO)
         hoja = libro.worksheet(nombre_hoja)
@@ -34,7 +45,7 @@ def leer_hoja(nombre_hoja):
 
 def escribir_fila(nombre_hoja, fila_datos):
     cliente = conectar_google_sheets()
-    NOMBRE_ARCHIVO = "MisFinanzas"
+    NOMBRE_ARCHIVO = "app_mis_finanzas"
     try:
         libro = cliente.open(NOMBRE_ARCHIVO)
         hoja = libro.worksheet(nombre_hoja)
