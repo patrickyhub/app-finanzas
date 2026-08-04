@@ -141,21 +141,39 @@ if not df_config.empty and not df_transacciones.empty:
         mask_proximo_ciclo = (df_gastos_cuenta['Fecha_Obj'].dt.date >= proximo_corte)
         total_proximo_ciclo = df_gastos_cuenta.loc[mask_proximo_ciclo, 'Monto'].sum()
         
-        # SALDO DISPONIBLE
-        total_ingresos_cuenta = df_cuenta[df_cuenta['Tipo'] == 'Ingreso']['Monto'].sum()
-        total_gastos_sin_filtro = df_gastos_cuenta['Monto'].sum()
+                # --- SALDO DISPONIBLE BLINDADO (con función de limpieza de "S/" y errores) ---
         
+        # Función auxiliar local para convertir cualquier cosa a número flotante
+        def convertir_a_float(valor):
+            if pd.isna(valor) or str(valor).strip() == '':
+                return 0.0
+            # Quitamos espacios y cualquier símbolo de moneda como "S/" o "s/"
+            texto_limpio = str(valor).replace("S/", "").replace("s/", "").strip()
+            try:
+                return float(texto_limpio)
+            except (ValueError, TypeError):
+                return 0.0
+
+        # 1. Asegurar que el límite de crédito siempre sea un número válido
+        limite_num = convertir_a_float(limite)
+
+        # 2. Calcular gastos (ya deben ser numéricos, pero aplicamos el filtro final)
+        gastos_num = convertir_a_float(total_gastos_sin_filtro)
+
+        # 3. Calcular comisiones de forma segura
         if tipo == 'Debito':
-            saldo_disponible = total_ingresos_cuenta - total_gastos_sin_filtro
+            saldo_disponible = total_ingresos_cuenta - gastos_num
         else:
-            total_comisiones = float(df_gastos_cuenta['Comision'].sum()) if 'Comision' in df_gastos_cuenta.columns else 0.0
+            if 'Comision' in df_gastos_cuenta.columns:
+                comision_suma = float(pd.to_numeric(df_gastos_cuenta['Comision'], errors='coerce').fillna(0.0).sum())
+            else:
+                comision_suma = 0.0
             
-            # Limpiar y asegurar que sean números antes de restar
-            limite_num = float(str(limite).replace("S/", "").strip()) if pd.notna(limite) and str(limite).strip() != '' else 0.0
-            gastos_num = float(str(total_gastos_sin_filtro).replace("S/", "").strip()) if pd.notna(total_gastos_sin_filtro) and str(total_gastos_sin_filtro).strip() != '' else 0.0
-            comisiones_num = float(str(total_comisiones).replace("S/", "").strip()) if pd.notna(total_comisiones) and str(total_comisiones).strip() != '' else 0.0
+            comisiones_num = convertir_a_float(comision_suma)
             
+            # La operación final, ya todo limpio como número
             saldo_disponible = limite_num - gastos_num - comisiones_num
+        # --- FIN SALDO DISPONIBLE ---
         with cols[i % 4]:
             st.markdown(f"### 🏦 {nombre}")
             
