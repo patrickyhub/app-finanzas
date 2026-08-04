@@ -225,59 +225,38 @@ if not df_config.empty and not df_transacciones.empty:
         mask_proximo_ciclo = (df_gastos_cuenta['Fecha_Obj'].dt.date >= proximo_corte)
         total_proximo_ciclo = df_gastos_cuenta.loc[mask_proximo_ciclo, 'Monto'].sum()
         
-        # SALDO DISPONIBLE: Límite - (Total Pagado + Total Próximo + Comisiones)
-        # (Si tiene débito, el límite es su saldo a favor)
-        total_ingresos_cuenta = df_cuenta[df_cuenta['Tipo'] == 'Ingreso']['Monto'].sum()
-        total_gastos_sin_filtro = pd.to_numeric(df_gastos_cuenta['Monto'], errors='coerce').sum()
-        
+        # --- SALDO DISPONIBLE A PRUEBA DE ERRORES (Celdas vacías o DataFrames vacíos) ---
+        # 1. Asegurar que el límite de crédito siempre sea un número (si está vacío o es "-" se convierte a 0.0)
+        limite_val = row.get('Limite_Credito', 0)
+        try:
+            limite = float(limite_val) if str(limite_val).strip() != '' else 0.0
+        except:
+            limite = 0.0
+
+        # 2. Calcular ingresos de forma segura
+        total_ingresos_cuenta = 0.0
+        df_ingresos = df_cuenta[df_cuenta['Tipo'] == 'Ingreso']
+        if not df_ingresos.empty and 'Monto' in df_ingresos.columns:
+            total_ingresos_cuenta = float(pd.to_numeric(df_ingresos['Monto'], errors='coerce').sum())
+
+        # 3. Calcular gastos de forma segura
+        total_gastos_sin_filtro = 0.0
+        if not df_gastos_cuenta.empty and 'Monto' in df_gastos_cuenta.columns:
+            total_gastos_sin_filtro = float(pd.to_numeric(df_gastos_cuenta['Monto'], errors='coerce').sum())
+
+        # 4. Calcular el saldo disponible según el tipo de tarjeta
         if tipo == 'Debito':
             saldo_disponible = total_ingresos_cuenta - total_gastos_sin_filtro
         else:
-            # Para crédito: restamos todo el gasto y las comisiones del límite
-            # (Si no hay datos de comisiones, se asume 0)
-            total_comisiones = pd.to_numeric(df_gastos_cuenta['Comision'], errors='coerce').sum() if 'Comision' in df_gastos_cuenta.columns else 0
-            saldo_disponible = limite - total_gastos_sin_filtro - total_comisiones
-
-        with cols[i % 4]:
-            st.markdown(f"### 🏦 {nombre}")
+            total_comisiones = float(df_gastos_cuenta['Comision'].sum()) if 'Comision' in df_gastos_cuenta.columns else 0.0
             
-            # DATOS DEL CICLO DE CRÉDITO (Para tarjetas de crédito)
-            if tipo == 'Credito':
-                c1, c2 = st.columns(2)
-                c1.metric(label="💰 Deuda actual a pagar", value=f"S/ {total_a_pagar:,.2f}")
-                
-                # Calculamos el porcentaje de uso considerando solo lo que debe pagar ahora
-                pct_uso_actual = (total_a_pagar / limite * 100) if limite > 0 else 0
-                if pct_uso_actual > 90:
-                    c2.error(f"🚨 ¡Cuidado! Debes S/ {total_a_pagar:,.2f}")
-                elif pct_uso_actual > 70:
-                    c2.warning(f"⚠️ Alto consumo: S/ {total_a_pagar:,.2f}")
-                else:
-                    c2.success(f"✅ Deuda controlada: S/ {total_a_pagar:,.2f}")
-
-                # Mostrar compras del siguiente ciclo
-                if total_proximo_ciclo > 0:
-                    st.caption(f"🗓️ Compras después del corte (mes siguiente): S/ {total_proximo_ciclo:,.2f}")
-
-                # Mostrar saldo disponible total
-                st.metric(label="📊 Saldo disponible actual", value=f"S/ {saldo_disponible:,.2f}")
-                
-                # Barra de progreso del límite total
-                pct_uso_total = ((total_gastos_sin_filtro + total_comisiones) / limite) * 100 if limite > 0 else 0
-                st.progress(min(pct_uso_total / 100, 1.0))
-                st.caption(f"Usado: {pct_uso_total:.1f}% de S/ {limite:,.2f}")
-
-                # Alerta por Ruleteo y Comisiones
-                if 'Comision' in df_gastos_cuenta.columns:
-                    total_comision = df_gastos_cuenta['Comision'].sum()
-                    if total_comision > 0:
-                        st.warning(f"💸 Comisiones por ruleteo este mes: S/ {total_comision:,.2f}")
+            # Forzar conversión limpia a float para evitar errores de tipo con strings vacíos o textos
+            limite_num = float(limite) if pd.notna(limite) and str(limite).strip() != '' else 0.0
+            gastos_num = float(total_gastos_sin_filtro) if pd.notna(total_gastos_sin_filtro) and str(total_gastos_sin_filtro).strip() != '' else 0.0
+            comisiones_num = float(total_comisiones) if pd.notna(total_comisiones) and str(total_comisiones).strip() != '' else 0.0
             
-            else:
-                # Para Débito
-                st.metric(label="💰 Saldo disponible", value=f"S/ {saldo_disponible:,.2f}")
-
-# (El resto del código sigue igual: Análisis, Formulario y Tabla)
+            saldo_disponible = limite_num - gastos_num - comisiones_num
+            # --- FIN SALDO DISPONIBLE ---# (El resto del código sigue igual: Análisis, Formulario y Tabla)
 # --- 3. ASESOR FINANCIERO ---
 st.divider()
 st.subheader("📊 Análisis y recomendaciones")
