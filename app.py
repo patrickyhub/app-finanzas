@@ -12,7 +12,7 @@ st.set_page_config(page_title="Mis Finanzas", layout="wide")
 st.title("🏦 Asesor Financiero (Sprint 4)")
 
 # --- CONEXIÓN A GOOGLE SHEETS ---
-@st.cache_resource
+#@st.cache_resource
 def conectar_google_sheets():
     scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
     
