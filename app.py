@@ -84,20 +84,17 @@ def procesar_inteligencia(df, df_palabras):
 
 df_procesado = procesar_inteligencia(df_transacciones, df_palabras)
 
-# --- NUEVO: LÓGICA DE CICLO DE FACTURACIÓN (CORTE, PAGO Y SALDO DISPONIBLE) ---
+# --- LÓGICA DE CICLO DE FACTURACIÓN ---
 hoy = date.today()
 
-# Función para calcular corte/pago según la configuración de la tarjeta
 def calcular_ciclo_tarjeta(row_config):
     try:
-        # El código busca columnas llamadas "Dia_Corte" y "Dia_Pago" (números)
         dia_corte = int(row_config.get('Dia_Corte', 15)) 
         dia_pago = int(row_config.get('Dia_Pago', 5))   
     except:
         dia_corte = 15
         dia_pago = 5
 
-    # Determinamos la fecha de corte más reciente
     corte_actual = date(hoy.year, hoy.month, dia_corte)
     if hoy < corte_actual:
         ultimo_corte = date(hoy.year, hoy.month - 1, dia_corte) if hoy.month > 1 else date(hoy.year - 1, 12, dia_corte)
@@ -111,7 +108,17 @@ def calcular_ciclo_tarjeta(row_config):
             
     return ultimo_corte, proximo_corte, dia_pago
 
-# --- DASHBOARD DE TARJETAS ---
+# --- UTILIDAD ---
+def convertir_a_float(valor):
+    if pd.isna(valor) or str(valor).strip() == '':
+        return 0.0
+    texto_limpio = str(valor).replace("S/", "").replace("s/", "").strip()
+    try:
+        return float(texto_limpio)
+    except (ValueError, TypeError):
+        return 0.0
+
+# --- DASHBOARD DE TARJETAS (ÚNICO BLOQUE) ---
 st.subheader("💳 Estado de tus cuentas")
 
 if not df_config.empty and not df_transacciones.empty:
@@ -121,63 +128,53 @@ if not df_config.empty and not df_transacciones.empty:
     for i, (idx, row) in enumerate(df_config.iterrows()):
         nombre = row.get('Tarjeta', 'Sin nombre')
         tipo = row.get('Tipo', 'Credito')
-        limite = float(row.get('Limite_Credito', 0))
         
-        # Calcular ciclos para esta tarjeta (ahora devuelve también el día de pago)
+        # Calcular ciclos
         ultimo_corte, proximo_corte, dia_pago = calcular_ciclo_tarjeta(row)
         
-        # 1. Filtrar gastos e ingresos de esta tarjeta
+        # Filtrar transacciones de esta tarjeta
         df_cuenta = df_transacciones[df_transacciones['Tarjeta'] == nombre]
-        df_gastos_cuenta = df_cuenta[df_cuenta['Tipo'] == 'Gasto']
+        df_gastos_cuenta = df_cuenta[df_cuenta['Tipo'] == 'Gasto'].copy()
+        df_ingresos_cuenta = df_cuenta[df_cuenta['Tipo'] == 'Ingreso']
         
-        # Convertir columna Fecha a datetime para filtrar por rango
-        df_gastos_cuenta['Fecha_Obj'] = pd.to_datetime(df_gastos_cuenta['Fecha'], format='%d/%m/%Y')
-        
-        # GASTOS DEL CICLO ACTUAL (Lo que debe pagar este mes)
-        mask_ciclo_actual = (df_gastos_cuenta['Fecha_Obj'].dt.date >= ultimo_corte) & (df_gastos_cuenta['Fecha_Obj'].dt.date < proximo_corte)
-        total_a_pagar = df_gastos_cuenta.loc[mask_ciclo_actual, 'Monto'].sum()
-        
-        # GASTOS DEL SIGUIENTE CICLO (Compras después del próximo corte)
-        mask_proximo_ciclo = (df_gastos_cuenta['Fecha_Obj'].dt.date >= proximo_corte)
-        total_proximo_ciclo = df_gastos_cuenta.loc[mask_proximo_ciclo, 'Monto'].sum()
-        
-                # --- SALDO DISPONIBLE BLINDADO (con función de limpieza de "S/" y errores) ---
-        
-        # Función auxiliar local para convertir cualquier cosa a número flotante
-        def convertir_a_float(valor):
-            if pd.isna(valor) or str(valor).strip() == '':
-                return 0.0
-            # Quitamos espacios y cualquier símbolo de moneda como "S/" o "s/"
-            texto_limpio = str(valor).replace("S/", "").replace("s/", "").strip()
-            try:
-                return float(texto_limpio)
-            except (ValueError, TypeError):
-                return 0.0
-
-        # 1. Asegurar que el límite de crédito siempre sea un número válido
-        limite_num = convertir_a_float(limite)
-
-        # 2. Calcular gastos (ya deben ser numéricos, pero aplicamos el filtro final)
-        gastos_num = convertir_a_float(total_gastos_sin_filtro)
-
-        # 3. Calcular comisiones de forma segura
-        if tipo == 'Debito':
-            saldo_disponible = total_ingresos_cuenta - gastos_num
+        # Convertir fechas de forma segura
+        if not df_gastos_cuenta.empty and 'Fecha' in df_gastos_cuenta.columns:
+            df_gastos_cuenta['Fecha_Obj'] = pd.to_datetime(df_gastos_cuenta['Fecha'], format='%d/%m/%Y', errors='coerce')
         else:
-            if 'Comision' in df_gastos_cuenta.columns:
-                comision_suma = float(pd.to_numeric(df_gastos_cuenta['Comision'], errors='coerce').fillna(0.0).sum())
-            else:
-                comision_suma = 0.0
-            
-            comisiones_num = convertir_a_float(comision_suma)
-            
-            # La operación final, ya todo limpio como número
-            saldo_disponible = limite_num - gastos_num - comisiones_num
-        # --- FIN SALDO DISPONIBLE ---
+            df_gastos_cuenta['Fecha_Obj'] = pd.NaT
+        
+        # Gastos del ciclo actual (lo que debe pagar este mes)
+        mask_ciclo_actual = (df_gastos_cuenta['Fecha_Obj'].dt.date >= ultimo_corte) & (df_gastos_cuenta['Fecha_Obj'].dt.date < proximo_corte)
+        total_a_pagar = float(pd.to_numeric(df_gastos_cuenta.loc[mask_ciclo_actual, 'Monto'], errors='coerce').sum()) if not df_gastos_cuenta.empty else 0.0
+        
+        # Gastos del siguiente ciclo
+        mask_proximo_ciclo = (df_gastos_cuenta['Fecha_Obj'].dt.date >= proximo_corte)
+        total_proximo_ciclo = float(pd.to_numeric(df_gastos_cuenta.loc[mask_proximo_ciclo, 'Monto'], errors='coerce').sum()) if not df_gastos_cuenta.empty else 0.0
+        
+        # Cálculos seguros de saldos
+        limite = convertir_a_float(row.get('Limite_Credito', 0))
+        
+        total_ingresos_cuenta = 0.0
+        if not df_ingresos_cuenta.empty and 'Monto' in df_ingresos_cuenta.columns:
+            total_ingresos_cuenta = float(pd.to_numeric(df_ingresos_cuenta['Monto'], errors='coerce').sum())
+        
+        total_gastos_sin_filtro = 0.0
+        if not df_gastos_cuenta.empty and 'Monto' in df_gastos_cuenta.columns:
+            total_gastos_sin_filtro = float(pd.to_numeric(df_gastos_cuenta['Monto'], errors='coerce').sum())
+        
+        total_comisiones = 0.0
+        if not df_gastos_cuenta.empty and 'Comision' in df_gastos_cuenta.columns:
+            total_comisiones = float(pd.to_numeric(df_gastos_cuenta['Comision'], errors='coerce').fillna(0).sum())
+        
+        if tipo == 'Debito':
+            saldo_disponible = total_ingresos_cuenta - total_gastos_sin_filtro
+        else:
+            saldo_disponible = limite - total_gastos_sin_filtro - total_comisiones
+        
+        # --- RENDERIZADO ---
         with cols[i % 4]:
             st.markdown(f"### 🏦 {nombre}")
             
-            # DATOS DEL CICLO DE CRÉDITO
             if tipo == 'Credito':
                 c1, c2 = st.columns(2)
                 c1.metric(label="💰 Deuda actual a pagar", value=f"S/ {total_a_pagar:,.2f}")
@@ -190,7 +187,6 @@ if not df_config.empty and not df_transacciones.empty:
                 else:
                     c2.success(f"✅ Deuda controlada: S/ {total_a_pagar:,.2f}")
 
-                # Aquí es donde mostramos el día de pago sugerido
                 st.success(f"📅 Pago sugerido: día {dia_pago}")
 
                 if total_proximo_ciclo > 0:
@@ -202,84 +198,16 @@ if not df_config.empty and not df_transacciones.empty:
                 st.progress(min(pct_uso_total / 100, 1.0))
                 st.caption(f"Usado: {pct_uso_total:.1f}% de S/ {limite:,.2f}")
 
-                # Alerta por Ruleteo y Comisiones
-                if 'Comision' in df_gastos_cuenta.columns:
-                    total_comision = df_gastos_cuenta['Comision'].sum()
-                    if total_comision > 0:
-                        st.warning(f"💸 Comisiones por ruleteo este mes: S/ {total_comision:,.2f}")
+                if total_comisiones > 0:
+                    st.warning(f"💸 Comisiones por ruleteo este mes: S/ {total_comisiones:,.2f}")
             
             else:
-                # Para Débito
                 st.metric(label="💰 Saldo disponible", value=f"S/ {saldo_disponible:,.2f}")
                 if saldo_disponible < 0:
                     st.error("⚠️ ¡Estás en números rojos!")
                 else:
                     st.info("💡 Este es tu dinero real (no crédito).")
 
-# --- DASHBOARD DE TARJETAS ---
-st.subheader("💳 Estado de tus cuentas")
-
-if not df_config.empty and not df_transacciones.empty:
-    df_gastos = df_transacciones[df_transacciones['Tipo'] == 'Gasto']
-    num_tarjetas = len(df_config)
-    cols = st.columns(min(num_tarjetas, 4))
-    
-    for i, (idx, row) in enumerate(df_config.iterrows()):
-        nombre = row.get('Tarjeta', 'Sin nombre')
-        tipo = row.get('Tipo', 'Credito')
-        limite = float(row.get('Limite_Credito', 0))
-        
-        # Calcular ciclos para esta tarjeta
-        ultimo_corte, proximo_corte = calcular_ciclo_tarjeta(row)
-        
-        # 1. Filtrar gastos e ingresos de esta tarjeta
-        df_cuenta = df_transacciones[df_transacciones['Tarjeta'] == nombre]
-        df_gastos_cuenta = df_cuenta[df_cuenta['Tipo'] == 'Gasto']
-        
-        # Convertir columna Fecha a datetime para filtrar por rango
-        df_gastos_cuenta['Fecha_Obj'] = pd.to_datetime(df_gastos_cuenta['Fecha'], format='%d/%m/%Y')
-        
-        # GASTOS DEL CICLO ACTUAL (Lo que debe pagar este mes)
-        # Gastos realizados entre el último corte y el próximo corte
-        mask_ciclo_actual = (df_gastos_cuenta['Fecha_Obj'].dt.date >= ultimo_corte) & (df_gastos_cuenta['Fecha_Obj'].dt.date < proximo_corte)
-        total_a_pagar = df_gastos_cuenta.loc[mask_ciclo_actual, 'Monto'].sum()
-        
-        # GASTOS DEL SIGUIENTE CICLO (Compras después del próximo corte)
-        mask_proximo_ciclo = (df_gastos_cuenta['Fecha_Obj'].dt.date >= proximo_corte)
-        total_proximo_ciclo = df_gastos_cuenta.loc[mask_proximo_ciclo, 'Monto'].sum()
-        
-        # --- SALDO DISPONIBLE A PRUEBA DE ERRORES (Celdas vacías o DataFrames vacíos) ---
-        # 1. Asegurar que el límite de crédito siempre sea un número (si está vacío o es "-" se convierte a 0.0)
-        limite_val = row.get('Limite_Credito', 0)
-        try:
-            limite = float(limite_val) if str(limite_val).strip() != '' else 0.0
-        except:
-            limite = 0.0
-
-        # 2. Calcular ingresos de forma segura
-        total_ingresos_cuenta = 0.0
-        df_ingresos = df_cuenta[df_cuenta['Tipo'] == 'Ingreso']
-        if not df_ingresos.empty and 'Monto' in df_ingresos.columns:
-            total_ingresos_cuenta = float(pd.to_numeric(df_ingresos['Monto'], errors='coerce').sum())
-
-        # 3. Calcular gastos de forma segura
-        total_gastos_sin_filtro = 0.0
-        if not df_gastos_cuenta.empty and 'Monto' in df_gastos_cuenta.columns:
-            total_gastos_sin_filtro = float(pd.to_numeric(df_gastos_cuenta['Monto'], errors='coerce').sum())
-
-        # 4. Calcular el saldo disponible según el tipo de tarjeta
-        if tipo == 'Debito':
-            saldo_disponible = total_ingresos_cuenta - total_gastos_sin_filtro
-        else:
-            total_comisiones = float(df_gastos_cuenta['Comision'].sum()) if 'Comision' in df_gastos_cuenta.columns else 0.0
-            
-            # Limpiar y forzar a números flotantes para evitar errores de tipo con strings o vacíos
-            limite_num = float(str(limite).replace("S/", "").strip()) if pd.notna(limite) and str(limite).strip() != '' else 0.0
-            gastos_num = float(str(total_gastos_sin_filtro).replace("S/", "").strip()) if pd.notna(total_gastos_sin_filtro) and str(total_gastos_sin_filtro).strip() != '' else 0.0
-            comisiones_num = float(str(total_comisiones).replace("S/", "").strip()) if pd.notna(total_comisiones) and str(total_comisiones).strip() != '' else 0.0
-            
-            saldo_disponible = limite_num - gastos_num - comisiones_num
-            
 # --- 3. ASESOR FINANCIERO ---
 st.divider()
 st.subheader("📊 Análisis y recomendaciones")
@@ -330,7 +258,6 @@ with st.form("form_registro"):
         opciones_tarjetas.extend(df_config['Tarjeta'].tolist())
     tarjeta = st.selectbox("Tarjeta/Cuenta asociada", opciones_tarjetas)
     
-    # Agregamos opción para Ruleteo
     es_ruleteo = st.checkbox("⚡ ¿Esto fue un Ruleteo? (Avance/Transferencia)")
     comision_ruleteo = 0.0
     if es_ruleteo:
@@ -356,7 +283,7 @@ with st.form("form_registro"):
                 tipo,
                 tarjeta,
                 "Sí" if es_fijo else "No",
-                comision_ruleteo  # <-- Nueva columna: Comisión
+                comision_ruleteo
             ]
             if escribir_fila("Transacciones", nueva_fila):
                 st.success("✅ Guardado correctamente")
