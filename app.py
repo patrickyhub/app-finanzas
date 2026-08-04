@@ -6,6 +6,7 @@ from datetime import datetime, date
 import plotly.graph_objects as go
 import plotly.express as px
 import json
+import calendar
 
 # --- CONFIGURACIÓN ---
 st.set_page_config(page_title="Mis Finanzas", layout="wide")
@@ -84,8 +85,13 @@ def procesar_inteligencia(df, df_palabras):
 
 df_procesado = procesar_inteligencia(df_transacciones, df_palabras)
 
-# --- LÓGICA DE CICLO DE FACTURACIÓN ---
+# --- LÓGICA DE CICLO DE FACTURACIÓN (CORREGIDA) ---
 hoy = date.today()
+
+def ajustar_dia_mes(year, month, day):
+    """Ajusta el día al máximo permitido por el mes (ej: 31 -> 30 en abril)"""
+    _, max_day = calendar.monthrange(year, month)
+    return min(day, max_day)
 
 def calcular_ciclo_tarjeta(row_config):
     try:
@@ -95,16 +101,27 @@ def calcular_ciclo_tarjeta(row_config):
         dia_corte = 15
         dia_pago = 5
 
-    corte_actual = date(hoy.year, hoy.month, dia_corte)
+    # Ajustar días inválidos (ej: 31 de febrero no existe)
+    dia_corte = max(1, min(dia_corte, 31))  # Primero acotamos entre 1-31
+    dia_pago = max(1, min(dia_pago, 31))
+    
+    # Fecha de corte del mes actual (ajustada al mes real)
+    corte_actual = date(hoy.year, hoy.month, ajustar_dia_mes(hoy.year, hoy.month, dia_corte))
+    
     if hoy < corte_actual:
-        ultimo_corte = date(hoy.year, hoy.month - 1, dia_corte) if hoy.month > 1 else date(hoy.year - 1, 12, dia_corte)
+        # El corte actual aún no pasa, entonces el último corte fue el mes pasado
+        if hoy.month == 1:
+            ultimo_corte = date(hoy.year - 1, 12, ajustar_dia_mes(hoy.year - 1, 12, dia_corte))
+        else:
+            ultimo_corte = date(hoy.year, hoy.month - 1, ajustar_dia_mes(hoy.year, hoy.month - 1, dia_corte))
         proximo_corte = corte_actual
     else:
+        # Ya pasó el corte de este mes
         ultimo_corte = corte_actual
         if hoy.month == 12:
-            proximo_corte = date(hoy.year + 1, 1, dia_corte)
+            proximo_corte = date(hoy.year + 1, 1, ajustar_dia_mes(hoy.year + 1, 1, dia_corte))
         else:
-            proximo_corte = date(hoy.year, hoy.month + 1, dia_corte)
+            proximo_corte = date(hoy.year, hoy.month + 1, ajustar_dia_mes(hoy.year, hoy.month + 1, dia_corte))
             
     return ultimo_corte, proximo_corte, dia_pago
 
@@ -118,7 +135,7 @@ def convertir_a_float(valor):
     except (ValueError, TypeError):
         return 0.0
 
-# --- DASHBOARD DE TARJETAS (ÚNICO BLOQUE) ---
+# --- DASHBOARD DE TARJETAS ---
 st.subheader("💳 Estado de tus cuentas")
 
 if not df_config.empty and not df_transacciones.empty:
@@ -148,7 +165,7 @@ if not df_config.empty and not df_transacciones.empty:
         total_a_pagar = float(pd.to_numeric(df_gastos_cuenta.loc[mask_ciclo_actual, 'Monto'], errors='coerce').sum()) if not df_gastos_cuenta.empty else 0.0
         
         # Gastos del siguiente ciclo
-        mask_proximo_ciclo = (df_gastos_cuenta['Fecha_Obj'].dt.date >= proximo_corte)
+        mask_proximo_ciclo = (df_gastos_cuenta['Fecha_Obj'].dt.date >= proximo_ciclo)
         total_proximo_ciclo = float(pd.to_numeric(df_gastos_cuenta.loc[mask_proximo_ciclo, 'Monto'], errors='coerce').sum()) if not df_gastos_cuenta.empty else 0.0
         
         # Cálculos seguros de saldos
@@ -208,7 +225,7 @@ if not df_config.empty and not df_transacciones.empty:
                 else:
                     st.info("💡 Este es tu dinero real (no crédito).")
 
-# --- 3. ASESOR FINANCIERO ---
+# --- 3. ASESOR FINANCIERO (CON GRÁFICOS PLOTLY) ---
 st.divider()
 st.subheader("📊 Análisis y recomendaciones")
 if not df_procesado.empty:
@@ -227,8 +244,9 @@ if not df_procesado.empty:
                 values=[gastos_impulsivos, gastos_necesarios, sin_clasificar],
                 names=['Impulsivo', 'Necesario', 'Sin clasificar'],
                 title='Distribución de gastos',
-                color_discrete_map={'Impulsivo':'red', 'Necesario':'green', 'Sin clasificar':'gray'}
+                color_discrete_map={'Impulsivo':'#FF6B6B', 'Necesario':'#51CF66', 'Sin clasificar':'#ADB5BD'}
             )
+            fig.update_traces(textposition='inside', textinfo='percent+label')
             st.plotly_chart(fig, use_container_width=True)
         
         with col2:
