@@ -228,14 +228,14 @@ if not df_config.empty and not df_transacciones.empty:
         # SALDO DISPONIBLE: Límite - (Total Pagado + Total Próximo + Comisiones)
         # (Si tiene débito, el límite es su saldo a favor)
         total_ingresos_cuenta = df_cuenta[df_cuenta['Tipo'] == 'Ingreso']['Monto'].sum()
-        total_gastos_sin_filtro = df_gastos_cuenta['Monto'].sum()
+        total_gastos_sin_filtro = pd.to_numeric(df_gastos_cuenta['Monto'], errors='coerce').sum()
         
         if tipo == 'Debito':
             saldo_disponible = total_ingresos_cuenta - total_gastos_sin_filtro
         else:
             # Para crédito: restamos todo el gasto y las comisiones del límite
             # (Si no hay datos de comisiones, se asume 0)
-            total_comisiones = df_gastos_cuenta['Comision'].sum() if 'Comision' in df_gastos_cuenta.columns else 0
+            total_comisiones = pd.to_numeric(df_gastos_cuenta['Comision'], errors='coerce').sum() if 'Comision' in df_gastos_cuenta.columns else 0
             saldo_disponible = limite - total_gastos_sin_filtro - total_comisiones
 
         with cols[i % 4]:
