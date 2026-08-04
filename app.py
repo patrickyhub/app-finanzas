@@ -60,7 +60,7 @@ def procesar_inteligencia(df, df_palabras):
     if df.empty:
         return df
     df_procesado = df.copy()
-    
+
     # A. Clasificar gastos por palabras clave
     df_procesado['Clasificacion'] = 'Sin clasificar'
     if not df_palabras.empty:
@@ -71,7 +71,7 @@ def procesar_inteligencia(df, df_palabras):
                 if palabra and palabra in desc:
                     df_procesado.at[idx, 'Clasificacion'] = p_row.get('Clasificacion', 'Sin clasificar')
                     break
-    
+
     # B. Detectar fijos
     df_procesado['Fijo_Detectado'] = 'No'
     if not df.empty and 'Descripcion' in df.columns and 'Monto' in df.columns:
@@ -80,52 +80,62 @@ def procesar_inteligencia(df, df_palabras):
         for _, f_row in fijos.iterrows():
             mask = (df_procesado['Descripcion'] == f_row['Descripcion']) & (df_procesado['Monto'] == f_row['Monto'])
             df_procesado.loc[mask, 'Fijo_Detectado'] = 'Sí (Auto)'
-    
+
     return df_procesado
 
 df_procesado = procesar_inteligencia(df_transacciones, df_palabras)
 
-# --- LÓGICA DE CICLO DE FACTURACIÓN (CORREGIDA) ---
+# --- LÓGICA DE CICLO DE FACTURACIÓN (ULTRA-DEFENSIVA) ---
 hoy = date.today()
 
-def ajustar_dia_mes(year, month, day):
-    """Ajusta el día al máximo permitido por el mes (ej: 31 -> 30 en abril)"""
+def dia_seguro(year, month, day):
+    """Devuelve un día válido para el mes/año dado."""
+    try:
+        day = int(day)
+    except (ValueError, TypeError):
+        day = 15
+    if day < 1:
+        day = 1
     _, max_day = calendar.monthrange(year, month)
-    return min(day, max_day)
+    if day > max_day:
+        day = max_day
+    return day
 
 def calcular_ciclo_tarjeta(row_config):
     try:
-        dia_corte = int(row_config.get('Dia_Corte', 15)) 
-        dia_pago = int(row_config.get('Dia_Pago', 5))   
-    except:
+        dia_corte_raw = row_config.get('Dia_Corte', 15)
+        dia_pago_raw = row_config.get('Dia_Pago', 5)
+        dia_corte = int(dia_corte_raw) if str(dia_corte_raw).strip() != '' else 15
+        dia_pago = int(dia_pago_raw) if str(dia_pago_raw).strip() != '' else 5
+    except Exception:
         dia_corte = 15
         dia_pago = 5
 
-    # Ajustar días inválidos (ej: 31 de febrero no existe)
-    dia_corte = max(1, min(dia_corte, 31))  # Primero acotamos entre 1-31
-    dia_pago = max(1, min(dia_pago, 31))
-    
-    # Fecha de corte del mes actual (ajustada al mes real)
-    corte_actual = date(hoy.year, hoy.month, ajustar_dia_mes(hoy.year, hoy.month, dia_corte))
-    
+    # Fecha de corte del mes actual (ajustada)
+    dc = dia_seguro(hoy.year, hoy.month, dia_corte)
+    corte_actual = date(hoy.year, hoy.month, dc)
+
     if hoy < corte_actual:
-        # El corte actual aún no pasa, entonces el último corte fue el mes pasado
+        # Último corte fue el mes pasado
         if hoy.month == 1:
-            ultimo_corte = date(hoy.year - 1, 12, ajustar_dia_mes(hoy.year - 1, 12, dia_corte))
+            ult_dc = dia_seguro(hoy.year - 1, 12, dia_corte)
+            ultimo_corte = date(hoy.year - 1, 12, ult_dc)
         else:
-            ultimo_corte = date(hoy.year, hoy.month - 1, ajustar_dia_mes(hoy.year, hoy.month - 1, dia_corte))
+            ult_dc = dia_seguro(hoy.year, hoy.month - 1, dia_corte)
+            ultimo_corte = date(hoy.year, hoy.month - 1, ult_dc)
         proximo_corte = corte_actual
     else:
-        # Ya pasó el corte de este mes
+        # Ya pasó el corte, el próximo es el mes que viene
         ultimo_corte = corte_actual
         if hoy.month == 12:
-            proximo_corte = date(hoy.year + 1, 1, ajustar_dia_mes(hoy.year + 1, 1, dia_corte))
+            prox_dc = dia_seguro(hoy.year + 1, 1, dia_corte)
+            proximo_corte = date(hoy.year + 1, 1, prox_dc)
         else:
-            proximo_corte = date(hoy.year, hoy.month + 1, ajustar_dia_mes(hoy.year, hoy.month + 1, dia_corte))
-            
+            prox_dc = dia_seguro(hoy.year, hoy.month + 1, dia_corte)
+            proximo_corte = date(hoy.year, hoy.month + 1, prox_dc)
+
     return ultimo_corte, proximo_corte, dia_pago
 
-# --- UTILIDAD ---
 def convertir_a_float(valor):
     if pd.isna(valor) or str(valor).strip() == '':
         return 0.0
@@ -141,61 +151,64 @@ st.subheader("💳 Estado de tus cuentas")
 if not df_config.empty and not df_transacciones.empty:
     num_tarjetas = len(df_config)
     cols = st.columns(min(num_tarjetas, 4))
-    
+
     for i, (idx, row) in enumerate(df_config.iterrows()):
-        nombre = row.get('Tarjeta', 'Sin nombre')
-        tipo = row.get('Tipo', 'Credito')
-        
-        # Calcular ciclos
-        ultimo_corte, proximo_corte, dia_pago = calcular_ciclo_tarjeta(row)
-        
+        nombre = str(row.get('Tarjeta', 'Sin nombre'))
+        tipo = str(row.get('Tipo', 'Credito'))
+
+        try:
+            ultimo_corte, proximo_corte, dia_pago = calcular_ciclo_tarjeta(row)
+        except Exception as e:
+            st.error(f"Error calculando ciclo para {nombre}: {e}")
+            continue
+
         # Filtrar transacciones de esta tarjeta
         df_cuenta = df_transacciones[df_transacciones['Tarjeta'] == nombre]
         df_gastos_cuenta = df_cuenta[df_cuenta['Tipo'] == 'Gasto'].copy()
         df_ingresos_cuenta = df_cuenta[df_cuenta['Tipo'] == 'Ingreso']
-        
+
         # Convertir fechas de forma segura
         if not df_gastos_cuenta.empty and 'Fecha' in df_gastos_cuenta.columns:
             df_gastos_cuenta['Fecha_Obj'] = pd.to_datetime(df_gastos_cuenta['Fecha'], format='%d/%m/%Y', errors='coerce')
         else:
             df_gastos_cuenta['Fecha_Obj'] = pd.NaT
-        
-        # Gastos del ciclo actual (lo que debe pagar este mes)
+
+        # Gastos del ciclo actual
         mask_ciclo_actual = (df_gastos_cuenta['Fecha_Obj'].dt.date >= ultimo_corte) & (df_gastos_cuenta['Fecha_Obj'].dt.date < proximo_corte)
         total_a_pagar = float(pd.to_numeric(df_gastos_cuenta.loc[mask_ciclo_actual, 'Monto'], errors='coerce').sum()) if not df_gastos_cuenta.empty else 0.0
-        
+
         # Gastos del siguiente ciclo
-        mask_proximo_ciclo = (df_gastos_cuenta['Fecha_Obj'].dt.date >= proximo_ciclo)
+        mask_proximo_ciclo = (df_gastos_cuenta['Fecha_Obj'].dt.date >= proximo_corte)
         total_proximo_ciclo = float(pd.to_numeric(df_gastos_cuenta.loc[mask_proximo_ciclo, 'Monto'], errors='coerce').sum()) if not df_gastos_cuenta.empty else 0.0
-        
+
         # Cálculos seguros de saldos
         limite = convertir_a_float(row.get('Limite_Credito', 0))
-        
+
         total_ingresos_cuenta = 0.0
         if not df_ingresos_cuenta.empty and 'Monto' in df_ingresos_cuenta.columns:
             total_ingresos_cuenta = float(pd.to_numeric(df_ingresos_cuenta['Monto'], errors='coerce').sum())
-        
+
         total_gastos_sin_filtro = 0.0
         if not df_gastos_cuenta.empty and 'Monto' in df_gastos_cuenta.columns:
             total_gastos_sin_filtro = float(pd.to_numeric(df_gastos_cuenta['Monto'], errors='coerce').sum())
-        
+
         total_comisiones = 0.0
         if not df_gastos_cuenta.empty and 'Comision' in df_gastos_cuenta.columns:
             total_comisiones = float(pd.to_numeric(df_gastos_cuenta['Comision'], errors='coerce').fillna(0).sum())
-        
+
         if tipo == 'Debito':
             saldo_disponible = total_ingresos_cuenta - total_gastos_sin_filtro
         else:
             saldo_disponible = limite - total_gastos_sin_filtro - total_comisiones
-        
+
         # --- RENDERIZADO ---
         with cols[i % 4]:
             st.markdown(f"### 🏦 {nombre}")
-            
+
             if tipo == 'Credito':
                 c1, c2 = st.columns(2)
                 c1.metric(label="💰 Deuda actual a pagar", value=f"S/ {total_a_pagar:,.2f}")
-                
+
                 pct_uso_actual = (total_a_pagar / limite * 100) if limite > 0 else 0
                 if pct_uso_actual > 90:
                     c2.error(f"🚨 ¡Cuidado! Debes S/ {total_a_pagar:,.2f}")
@@ -210,14 +223,14 @@ if not df_config.empty and not df_transacciones.empty:
                     st.caption(f"🗓️ Compras después del corte (mes siguiente): S/ {total_proximo_ciclo:,.2f}")
 
                 st.metric(label="📊 Saldo disponible actual", value=f"S/ {saldo_disponible:,.2f}")
-                
+
                 pct_uso_total = ((total_gastos_sin_filtro + total_comisiones) / limite) * 100 if limite > 0 else 0
                 st.progress(min(pct_uso_total / 100, 1.0))
                 st.caption(f"Usado: {pct_uso_total:.1f}% de S/ {limite:,.2f}")
 
                 if total_comisiones > 0:
                     st.warning(f"💸 Comisiones por ruleteo este mes: S/ {total_comisiones:,.2f}")
-            
+
             else:
                 st.metric(label="💰 Saldo disponible", value=f"S/ {saldo_disponible:,.2f}")
                 if saldo_disponible < 0:
@@ -232,12 +245,12 @@ if not df_procesado.empty:
     df_gastos_proc = df_procesado[df_procesado['Tipo'] == 'Gasto']
     total_ingresos = df_procesado[df_procesado['Tipo'] == 'Ingreso']['Monto'].sum()
     total_gastos = df_gastos_proc['Monto'].sum()
-    
+
     if total_ingresos > 0 and not df_gastos_proc.empty:
         gastos_impulsivos = df_gastos_proc[df_gastos_proc['Clasificacion'] == 'Impulsivo']['Monto'].sum()
         gastos_necesarios = df_gastos_proc[df_gastos_proc['Clasificacion'] == 'Necesario']['Monto'].sum()
         sin_clasificar = df_gastos_proc[df_gastos_proc['Clasificacion'] == 'Sin clasificar']['Monto'].sum()
-        
+
         col1, col2 = st.columns([1, 1])
         with col1:
             fig = px.pie(
@@ -248,7 +261,7 @@ if not df_procesado.empty:
             )
             fig.update_traces(textposition='inside', textinfo='percent+label')
             st.plotly_chart(fig, use_container_width=True)
-        
+
         with col2:
             st.markdown("### 💡 Estrategias personalizadas")
             pct_imp = (gastos_impulsivos / total_ingresos) * 100
@@ -256,7 +269,7 @@ if not df_procesado.empty:
                 st.warning(f"💸 Gastaste S/ {gastos_impulsivos:,.2f} en impulsos ({pct_imp:.1f}% de ingresos).")
                 if pct_imp > 15: st.markdown("📉 **Consejo:** Aplica la regla de 30 días.")
             else: st.success("🎉 Sin gastos impulsivos!")
-            
+
             fijos = df_procesado[df_procesado['Fijo_Detectado'] == 'Sí (Auto)']
             if not fijos.empty: st.info(f"📌 Detecté {len(fijos)} gastos fijos.")
             st.success(f"💰 Meta de ahorro sugerida: 10% = S/ {total_ingresos * 0.1:,.2f}")
@@ -270,20 +283,20 @@ with st.form("form_registro"):
     categoria = st.text_input("Categoría", placeholder="Ej: Ropa")
     monto = st.number_input("Monto (S/)", min_value=0.01, step=0.5, format="%.2f")
     tipo = st.selectbox("Tipo", ["Gasto", "Ingreso"])
-    
+
     opciones_tarjetas = ["No aplica"]
     if not df_config.empty and 'Tarjeta' in df_config.columns:
         opciones_tarjetas.extend(df_config['Tarjeta'].tolist())
     tarjeta = st.selectbox("Tarjeta/Cuenta asociada", opciones_tarjetas)
-    
+
     es_ruleteo = st.checkbox("⚡ ¿Esto fue un Ruleteo? (Avance/Transferencia)")
     comision_ruleteo = 0.0
     if es_ruleteo:
         st.caption("Las entidades suelen cobrar comisión por esto.")
         comision_ruleteo = st.number_input("Comisión por el ruleteo (S/)", min_value=0.0, step=1.0, format="%.2f")
-    
+
     es_fijo = st.checkbox("¿Es un gasto fijo mensual?")
-    
+
     submitted = st.form_submit_button("Guardar movimiento")
     if submitted:
         error = False
@@ -291,7 +304,7 @@ with st.form("form_registro"):
             st.error("❌ La 'Descripción' es obligatoria."); error = True
         if monto <= 0:
             st.error("❌ El 'Monto' debe ser mayor a 0."); error = True
-        
+
         if not error:
             nueva_fila = [
                 fecha.strftime("%d/%m/%Y"),
