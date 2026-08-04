@@ -12,18 +12,15 @@ st.set_page_config(page_title="Mis Finanzas", layout="wide")
 st.title("🏦 Asesor Financiero (Sprint 4)")
 
 # --- CONEXIÓN A GOOGLE SHEETS ---
-#@st.cache_resource
+# @st.cache_resource  <-- Comentado por ahora
 def conectar_google_sheets():
     scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-    
     try:
         # MODO NUBE (Streamlit Cloud)
-        # Intenta leer las credenciales desde los "Secretos" de Streamlit
         creds_info = json.loads(st.secrets["GOOGLE_CREDENTIALS_JSON"])
         creds = ServiceAccountCredentials.from_service_account_info(creds_info, scope)
     except Exception:
         # MODO LOCAL (Tu computadora)
-        # Si falla (porque no estás en la nube), busca el archivo local (solo para desarrollo)
         creds = ServiceAccountCredentials.from_json_keyfile_name("credenciales.json", scope)
         
     return gspread.authorize(creds)
