@@ -41,12 +41,20 @@ def leer_hoja(nombre_hoja):
         datos = hoja.get_all_records()
         df = pd.DataFrame(datos)
         
-        # Normalización preventiva de montos
-        if not df.empty and 'Monto' in df.columns:
-            df['Monto'] = df['Monto'].apply(convertir_a_float)
-        if not df.empty and 'Comision' in df.columns:
-            df['Comision'] = df['Comision'].apply(convertir_a_float)
+        if not df.empty:
+            # 1. NUEVO: Limpiar espacios invisibles y capitalizar columnas de texto clave
+            columnas_texto = ['Tipo', 'Tarjeta', 'Categoria']
+            for col in columnas_texto:
+                if col in df.columns:
+                    # Convierte a texto, elimina espacios extra al inicio/final y pone Mayúscula Inicial (Ej: " ingreso " -> "Ingreso")
+                    df[col] = df[col].astype(str).str.strip().str.title()
             
+            # 2. Normalización preventiva de montos
+            if 'Monto' in df.columns:
+                df['Monto'] = df['Monto'].apply(convertir_a_float)
+            if 'Comision' in df.columns:
+                df['Comision'] = df['Comision'].apply(convertir_a_float)
+                
         return df
     except gspread.WorksheetNotFound:
         st.warning(f"⚠️ La hoja '{nombre_hoja}' no existe. Créala en Google Sheets.")
