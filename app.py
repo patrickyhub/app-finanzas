@@ -9,6 +9,14 @@ import calendar
 
 # --- CONFIGURACIÓN DE PÁGINA ---
 st.set_page_config(page_title="Mis Finanzas", layout="wide")
+
+# 💡 NUEVO: BARRA LATERAL PARA TIPO DE CAMBIO
+with st.sidebar:
+    st.header("⚙️ Configuración")
+    # Puedes cambiar el 3.75 por el tipo de cambio actual del día
+    tipo_cambio = st.number_input("Tipo de Cambio (USD a S/)", value=3.75, step=0.01)
+    st.info(f"Tus consumos en dólares se multiplicarán por {tipo_cambio} para calcular tu línea de crédito disponible y tus estadísticas.")
+
 st.title("🏦 Asesor Financiero (Sprint 4)")
 
 # --- CONEXIÓN A GOOGLE SHEETS (CON CACHÉ) ---
@@ -25,7 +33,7 @@ def conectar_google_sheets():
 def convertir_a_float(valor):
     if pd.isna(valor) or str(valor).strip() == '':
         return 0.0
-    texto_limpio = str(valor).replace("S/", "").replace("s/", "").replace(",", "").strip()
+    texto_limpio = str(valor).replace("S/", "").replace("s/", "").replace("$", "").replace(",", "").strip()
     try:
         return float(texto_limpio)
     except (ValueError, TypeError):
@@ -42,14 +50,16 @@ def leer_hoja(nombre_hoja):
         df = pd.DataFrame(datos)
         
         if not df.empty:
-            # 1. NUEVO: Limpiar espacios invisibles y capitalizar columnas de texto clave
             columnas_texto = ['Tipo', 'Tarjeta', 'Categoria']
             for col in columnas_texto:
                 if col in df.columns:
-                    # Convierte a texto, elimina espacios extra al inicio/final y pone Mayúscula Inicial (Ej: " ingreso " -> "Ingreso")
                     df[col] = df[col].astype(str).str.strip().str.title()
             
-            # 2. Normalización preventiva de montos
+            if 'Moneda' not in df.columns:
+                df['Moneda'] = 'PEN'
+            df['Moneda'] = df['Moneda'].astype(str).str.strip().str.upper()
+            df['Moneda'] = df['Moneda'].replace({'': 'PEN', 'SOLES': 'PEN', 'DOLARES': 'USD'})
+            
             if 'Monto' in df.columns:
                 df['Monto'] = df['Monto'].apply(convertir_a_float)
             if 'Comision' in df.columns:
@@ -71,7 +81,7 @@ def escribir_fila(nombre_hoja, fila_datos):
         hoja = libro.worksheet(nombre_hoja)
         fila_str = [str(item) for item in fila_datos]
         hoja.append_row(fila_str)
-        st.cache_data.clear()  # Limpiar caché tras escritura exitosa
+        st.cache_data.clear()  
         return True
     except Exception as e:
         st.error(f"Error al guardar en Sheets: {e}")
@@ -105,12 +115,18 @@ def procesar_inteligencia(df, df_palabras):
         for _, f_row in fijos.iterrows():
             mask = (df_procesado['Descripcion'] == f_row['Descripcion']) & (df_procesado['Monto'] == f_row['Monto'])
             df_procesado.loc[mask, 'Fijo_Detectado'] = 'Sí (Auto)'
+            
+    # 💡 NUEVO: Creamos una columna invisible unificada en Soles para cálculos globales
+    if 'Moneda' in df_procesado.columns and 'Monto' in df_procesado.columns:
+        df_procesado['Monto_PEN'] = df_procesado.apply(
+            lambda x: x['Monto'] * tipo_cambio if x['Moneda'] == 'USD' else x['Monto'], axis=1
+        )
 
     return df_procesado
 
 df_procesado = procesar_inteligencia(df_transacciones, df_palabras)
 
-# --- CÁLCULO DE CICLOS DE FACTURACIÓN (MEJORADO CON FECHAS DE PAGO) ---
+# --- CÁLCULO DE CICLOS DE FACTURACIÓN ---
 hoy = date.today()
 
 def dia_seguro(year, month, day):
@@ -129,7 +145,6 @@ def calcular_ciclo_tarjeta(row_config):
     except (ValueError, TypeError):
         dia_corte, dia_pago = 15, 5
 
-    # 1. Calcular fechas de corte
     dc = dia_seguro(hoy.year, hoy.month, dia_corte)
     corte_actual = date(hoy.year, hoy.month, dc)
 
@@ -146,8 +161,6 @@ def calcular_ciclo_tarjeta(row_config):
         prox_dc = dia_seguro(anio_prox, mes_prox, dia_corte)
         proximo_corte = date(anio_prox, mes_prox, prox_dc)
 
-    # 2. Calcular fecha de pago exacta para el ciclo que cierra en 'proximo_corte'
-    # Normalmente, si el corte es un mes, se paga el mes siguiente.
     mes_pago_exacto = proximo_corte.month + 1
     anio_pago_exacto = proximo_corte.year
     if mes_pago_exacto > 12:
@@ -159,7 +172,7 @@ def calcular_ciclo_tarjeta(row_config):
 
     return ultimo_corte, proximo_corte, fecha_pago_ciclo
 
-# --- DASHBOARD DE CUENTAS (CON GRÁFICOS PLOTLY) ---
+# --- DASHBOARD DE CUENTAS (MULTI-MONEDA INTEGRADO) ---
 st.subheader("💳 Estado de tus cuentas")
 
 if not df_config.empty and not df_transacciones.empty:
@@ -181,37 +194,49 @@ if not df_config.empty and not df_transacciones.empty:
         else:
             df_gastos['Fecha_Obj'] = pd.NaT
 
-        # Cálculo por ciclos
+        df_gastos_pen = df_gastos[df_gastos['Moneda'] != 'USD']
+        df_gastos_usd = df_gastos[df_gastos['Moneda'] == 'USD']
+
         mask_ciclo_actual = (df_gastos['Fecha_Obj'].dt.date >= ultimo_corte) & (df_gastos['Fecha_Obj'].dt.date < proximo_corte)
-        total_a_pagar = df_gastos.loc[mask_ciclo_actual, 'Monto'].sum()
-
         mask_proximo_ciclo = (df_gastos['Fecha_Obj'].dt.date >= proximo_corte)
-        total_proximo_ciclo = df_gastos.loc[mask_proximo_ciclo, 'Monto'].sum()
 
-        total_ingresos = df_ingresos['Monto'].sum() if not df_ingresos.empty else 0.0
-        total_gastos = df_gastos['Monto'].sum() if not df_gastos.empty else 0.0
-        total_comisiones = df_gastos['Comision'].sum() if not df_gastos.empty and 'Comision' in df_gastos.columns else 0.0
+        # Cálculos en pantalla separados (S/ y $)
+        total_a_pagar_pen = df_gastos_pen.loc[mask_ciclo_actual, 'Monto'].sum()
+        total_proximo_ciclo_pen = df_gastos_pen.loc[mask_proximo_ciclo, 'Monto'].sum()
+        
+        total_a_pagar_usd = df_gastos_usd.loc[mask_ciclo_actual, 'Monto'].sum()
+        total_proximo_ciclo_usd = df_gastos_usd.loc[mask_proximo_ciclo, 'Monto'].sum()
+
+        # 💡 NUEVO: Cálculos globales (Todo llevado a Soles) para la línea de crédito
+        total_gastos_pen = df_gastos_pen['Monto'].sum() if not df_gastos_pen.empty else 0.0
+        total_gastos_usd = df_gastos_usd['Monto'].sum() if not df_gastos_usd.empty else 0.0
+        total_comisiones_pen = df_gastos_pen['Comision'].sum() if not df_gastos_pen.empty and 'Comision' in df_gastos_pen.columns else 0.0
+        
+        # Consumo total unificado
+        uso_total_consolidado = total_gastos_pen + total_comisiones_pen + (total_gastos_usd * tipo_cambio)
 
         if tipo == 'Debito':
-            saldo_disponible = total_ingresos - total_gastos
+            # Si es débito sumamos los ingresos unificados
+            total_ingresos_pen = df_ingresos[df_ingresos['Moneda'] != 'USD']['Monto'].sum() if not df_ingresos.empty else 0.0
+            total_ingresos_usd = df_ingresos[df_ingresos['Moneda'] == 'USD']['Monto'].sum() if not df_ingresos.empty else 0.0
+            saldo_disponible = (total_ingresos_pen + (total_ingresos_usd * tipo_cambio)) - uso_total_consolidado
         else:
-            saldo_disponible = limite - total_gastos - total_comisiones
+            # Si es crédito, restamos el consumo unificado al límite
+            saldo_disponible = limite - uso_total_consolidado
 
         with cols[i % 4]:
             st.markdown(f"### 🏦 {nombre}")
             if tipo == 'Credito':
-                # Gráfico Gauge con Plotly
-                uso_total = total_gastos + total_comisiones
-                pct_uso_total = (uso_total / limite * 100) if limite > 0 else 0
-                
-                # Definir color del gauge según porcentaje de uso
+                pct_uso_total = (uso_total_consolidado / limite * 100) if limite > 0 else 0
                 color_barra = "#FF4B4B" if pct_uso_total >= 80 else "#FDE74C" if pct_uso_total >= 50 else "#1DD3B0"
                 
+                # Gauge chart (Unificado en Soles)
                 fig = go.Figure(go.Indicator(
                     mode="gauge+number",
-                    value=uso_total,
+                    value=uso_total_consolidado,
                     number={'prefix': "S/ ", 'valueformat': ",.2f"},
                     domain={'x': [0, 1], 'y': [0, 1]},
+                    title={'text': "Uso Total (Eq. Soles)", 'font': {'size': 14}},
                     gauge={
                         'axis': {'range': [0, limite], 'tickwidth': 1, 'tickcolor': "darkblue"},
                         'bar': {'color': color_barra},
@@ -226,41 +251,43 @@ if not df_config.empty and not df_transacciones.empty:
                         'threshold': {'line': {'color': "red", 'width': 4}, 'thickness': 0.75, 'value': limite}
                     }
                 ))
-                fig.update_layout(height=200, margin=dict(l=20, r=20, t=30, b=20))
+                fig.update_layout(height=200, margin=dict(l=20, r=20, t=40, b=20))
                 st.plotly_chart(fig, use_container_width=True)
 
-                st.metric(label="💰 Deuda del ciclo actual", value=f"S/ {total_a_pagar:,.2f}")
+                c1, c2 = st.columns(2)
+                c1.metric(label="Deuda ciclo (S/)", value=f"S/ {total_a_pagar_pen:,.2f}")
+                c2.metric(label="Deuda ciclo ($)", value=f"$ {total_a_pagar_usd:,.2f}")
                 
-                # Fechas dinámicas del ciclo
                 st.info(f"**Corte:** {proximo_corte.strftime('%d %b')} | **Pago:** {fecha_pago_ciclo.strftime('%d %b')}")
                 
-                if total_proximo_ciclo > 0:
-                    st.warning(f"🗓️ Gastos para el **próximo ciclo**: S/ {total_proximo_ciclo:,.2f}")
+                if total_proximo_ciclo_pen > 0 or total_proximo_ciclo_usd > 0:
+                    st.warning(f"🗓️ **Próximo ciclo:** S/ {total_proximo_ciclo_pen:,.2f} | $ {total_proximo_ciclo_usd:,.2f}")
 
-                st.caption(f"Saldo libre: S/ {saldo_disponible:,.2f}")
+                st.caption(f"Línea libre aprox.: S/ {saldo_disponible:,.2f}")
             else:
-                st.metric(label="💰 Saldo disponible", value=f"S/ {saldo_disponible:,.2f}")
+                st.metric(label="💰 Saldo aprox. (S/)", value=f"S/ {saldo_disponible:,.2f}")
                 if saldo_disponible < 0:
                     st.error("⚠️ En números rojos")
 
-# --- ANÁLISIS FINANCIERO ---
+# --- ANÁLISIS FINANCIERO UNIFICADO ---
 st.divider()
-st.subheader("📊 Análisis y recomendaciones")
+st.subheader("📊 Análisis y recomendaciones globales")
 if not df_procesado.empty:
+    # 💡 NUEVO: Utilizamos Monto_PEN para que el gráfico sume tanto soles como dólares convertidos
     df_gastos_proc = df_procesado[df_procesado['Tipo'] == 'Gasto']
-    total_ingresos = df_procesado[df_procesado['Tipo'] == 'Ingreso']['Monto'].sum()
+    total_ingresos = df_procesado[df_procesado['Tipo'] == 'Ingreso']['Monto_PEN'].sum()
 
     if total_ingresos > 0 and not df_gastos_proc.empty:
-        gastos_impulsivos = df_gastos_proc[df_gastos_proc['Clasificacion'] == 'Impulsivo']['Monto'].sum()
-        gastos_necesarios = df_gastos_proc[df_gastos_proc['Clasificacion'] == 'Necesario']['Monto'].sum()
-        sin_clasificar = df_gastos_proc[df_gastos_proc['Clasificacion'] == 'Sin clasificar']['Monto'].sum()
+        gastos_impulsivos = df_gastos_proc[df_gastos_proc['Clasificacion'] == 'Impulsivo']['Monto_PEN'].sum()
+        gastos_necesarios = df_gastos_proc[df_gastos_proc['Clasificacion'] == 'Necesario']['Monto_PEN'].sum()
+        sin_clasificar = df_gastos_proc[df_gastos_proc['Clasificacion'] == 'Sin clasificar']['Monto_PEN'].sum()
 
         col1, col2 = st.columns([1, 1])
         with col1:
             fig = px.pie(
                 values=[gastos_impulsivos, gastos_necesarios, sin_clasificar],
                 names=['Impulsivo', 'Necesario', 'Sin clasificar'],
-                title='Distribución de gastos',
+                title='Distribución de gastos (Soles + Dólares Eq.)',
                 color_discrete_map={'Impulsivo':'#FF6B6B', 'Necesario':'#51CF66', 'Sin clasificar':'#ADB5BD'}
             )
             fig.update_traces(textposition='inside', textinfo='percent+label')
@@ -273,7 +300,6 @@ if not df_procesado.empty:
                 st.warning(f"💸 Gastos impulsivos: S/ {gastos_impulsivos:,.2f} ({pct_imp:.1f}% de ingresos).")
             else: 
                 st.success("🎉 Sin gastos impulsivos registrados.")
-
             st.success(f"💰 Meta de ahorro (10%): S/ {total_ingresos * 0.1:,.2f}")
 
 # --- FORMULARIO DE REGISTRO ---
@@ -281,23 +307,32 @@ st.divider()
 st.subheader("✍️ Registrar nuevo movimiento")
 
 opciones_tarjetas = df_config['Tarjeta'].tolist() if not df_config.empty else ["Efectivo"]
+es_ruleteo = st.checkbox("🔄 ¿Es una operación de Ruleteo?")
 
 with st.form("form_registro"):
     col_f1, col_f2, col_f3 = st.columns(3)
+    
     with col_f1:
         fecha = st.date_input("Fecha", value=date.today())
         descripcion = st.text_input("Descripción")
         tipo = st.selectbox("Tipo de movimiento", ["Gasto", "Ingreso"])
     
     with col_f2:
-        monto = st.number_input("Monto (S/)", min_value=0.0, step=10.0)
+        col_m1, col_m2 = st.columns([2, 1])
+        with col_m1:
+            monto = st.number_input("Monto", min_value=0.0, step=10.0)
+        with col_m2:
+            moneda = st.selectbox("Moneda", ["PEN (S/)", "USD ($)"]) 
+            
         categoria = st.text_input("Categoría", value="General")
         tarjeta = st.selectbox("Cuenta / Tarjeta", opciones_tarjetas)
 
     with col_f3:
         es_fijo = st.checkbox("¿Es gasto fijo?")
-        es_ruleteo = st.checkbox("¿Es operacion de Ruleteo?")
-        comision_ruleteo = st.number_input("Comisión Ruleteo (S/)", min_value=0.0, step=1.0) if es_ruleteo else 0.0
+        if es_ruleteo:
+            comision_ruleteo = st.number_input("💸 Comisión Ruleteo (S/)", min_value=0.0, step=1.0)
+        else:
+            comision_ruleteo = 0.0
 
     submitted = st.form_submit_button("Guardar movimiento")
 
@@ -307,6 +342,8 @@ if submitted:
     elif monto <= 0:
         st.error("❌ El 'Monto' debe ser mayor a 0.")
     else:
+        moneda_str = "USD" if "USD" in moneda else "PEN"
+        
         nueva_fila = [
             fecha.strftime("%d/%m/%Y"),
             descripcion.strip(),
@@ -315,7 +352,8 @@ if submitted:
             tipo,
             tarjeta,
             "Sí" if es_fijo else "No",
-            comision_ruleteo
+            comision_ruleteo,
+            moneda_str
         ]
         
         if es_ruleteo:
@@ -329,12 +367,13 @@ if submitted:
                 fila_ingreso_ruleteo = [
                     fecha.strftime("%d/%m/%Y"),
                     f"INGRESO POR RULETEO: {descripcion.strip()}",
-                    "Ingresos",
+                    "Ingreso", 
                     monto - comision_ruleteo,
                     "Ingreso",
                     cuenta_debito,
                     "No",
-                    0.0
+                    0.0,
+                    moneda_str 
                 ]
                 escribir_fila("Transacciones", fila_ingreso_ruleteo)
                 st.success("✅ Ruleteo guardado correctamente.")
@@ -344,12 +383,29 @@ if submitted:
                 st.success("✅ Movimiento guardado correctamente.")
                 st.rerun()
 
-# --- HISTORIAL ---
+# --- HISTORIAL (CON FILTRO POR MES) ---
 st.divider()
 st.subheader("📋 Historial completo")
 if not df_procesado.empty:
-    cols_mostrar = ['Fecha', 'Descripcion', 'Categoria', 'Monto', 'Tipo', 'Tarjeta', 'Clasificacion', 'Fijo_Detectado', 'Comision']
-    cols_existentes = [c for c in cols_mostrar if c in df_procesado.columns]
-    st.dataframe(df_procesado[cols_existentes], use_container_width=True)
+    
+    fechas_validas = pd.to_datetime(df_procesado['Fecha'], format='%d/%m/%Y', errors='coerce')
+    df_procesado['Mes_Filtro'] = fechas_validas.dt.strftime('%m/%Y').fillna('Desconocido')
+    
+    meses_disponibles = ['Todos'] + sorted(
+        df_procesado[df_procesado['Mes_Filtro'] != 'Desconocido']['Mes_Filtro'].unique().tolist(), 
+        reverse=True
+    )
+    
+    filtro_mes = st.selectbox("📅 Filtrar por mes:", meses_disponibles)
+    
+    df_mostrar = df_procesado.copy()
+    if filtro_mes != 'Todos':
+        df_mostrar = df_mostrar[df_mostrar['Mes_Filtro'] == filtro_mes]
+        
+    cols_mostrar = ['Fecha', 'Descripcion', 'Categoria', 'Monto', 'Moneda', 'Tipo', 'Tarjeta', 'Clasificacion', 'Comision']
+    cols_existentes = [c for c in cols_mostrar if c in df_mostrar.columns]
+    
+    st.dataframe(df_mostrar[cols_existentes], use_container_width=True)
+    st.caption(f"Mostrando {len(df_mostrar)} movimientos para: {filtro_mes}")
 else:
     st.info("Aún no hay transacciones registradas.")
