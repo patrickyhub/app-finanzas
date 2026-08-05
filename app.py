@@ -324,7 +324,7 @@ with st.form("form_registro"):
 st.divider()
 st.subheader("📋 Historial completo")
 if not df_procesado.empty:
-    columnas_mostrar = ['Fecha', 'Descripcion', 'Categoria', 'Monto', 'Tipo', 'Tarjeta', 'Clasificacion', 'Fijo_Detectado']
+    columnas_mostrar = ['Fecha', 'Descripcion', 'Categoria', 'Monto', 'Tipo', 'Tarjeta', 'Clasificacion', 'Fijo_Detectado', 'Comision']
     columnas_existentes = [col for col in columnas_mostrar if col in df_procesado.columns]
     st.dataframe(df_procesado[columnas_existentes], use_container_width=True)
     st.caption(f"Total: {len(df_procesado)} movimientos")
